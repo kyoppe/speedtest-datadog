@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  speedtest:
+    build: .
+    # Or use pre-built image:
+    # image: ghcr.io/[your-github-username]/speedtest-datadog:latest
+    
+    container_name: speedtest-datadog
+    
+    environment:
+      # Secrets (from .env file)
+      - DD_API_KEY=${DD_API_KEY}
+      
+      # Configuration (edit these values directly)
+      - DD_SITE=datadoghq.com
+      - METRIC_PREFIX=test.kyouhei
+      - DD_TAGS=datacenter:machida
+      - SPEEDTEST_FREQUENCY=120
+      - ENABLE_LOGS=true
+      - ENABLE_TRACES=true
+    
+    restart: unless-stopped
+
+  # Uncomment to enable full observability (logs + traces)
+  # datadog-agent:
+  #   image: datadog/agent:latest
+  #   environment:
+  #     - DD_API_KEY=${DD_API_KEY}
+  #     - DD_SITE=${DD_SITE:-datadoghq.com}
+  #     - DD_LOGS_ENABLED=true
+  #     - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+  #     - DD_APM_ENABLED=true
+  #     - DD_APM_NON_LOCAL_TRAFFIC=true
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - /proc/:/host/proc/:ro
+  #     - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+  #   restart: unless-stopped
