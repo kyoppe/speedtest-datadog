@@ -22,11 +22,15 @@ A Docker container that periodically runs internet speed tests and sends the res
 
 ### Tags (automatically added)
 
+- `host`: Hostname of the machine running the test
 - `speedtest_server_name`: Test server name
 - `speedtest_server_country`: Test server country
 - `speedtest_server_sponsor`: Test server sponsor/ISP
 - `speedtest_server_id`: Test server ID
+- `server_selection`: `manual` or `auto` (whether a specific server was requested)
 - `isp`: Your ISP name
+- `container_id`: Full container ID (64 chars, Docker only)
+- `container_name`: Container name (Docker only)
 - Plus any custom tags you define in `DD_TAGS`
 
 ## Quick Start
@@ -57,13 +61,16 @@ python speedtest_runner.py
 
 ### Docker (Recommended)
 
-```bash
-# 1. Build the image
-docker build -t speedtest-datadog .
+**Using pre-built multi-architecture image (amd64, arm64):**
 
-# 2. Run with docker-compose
+```bash
+# 1. Create .env file
 cp .env.sample .env
-# Edit .env and set your DD_API_KEY
+# Edit .env and set:
+#   - DD_API_KEY (required)
+#   - HOST_HOSTNAME (recommended for identifying servers)
+
+# 2. Run with docker-compose (uses ghcr.io/kyoppe/speedtest-datadog:latest)
 docker-compose up -d
 
 # 3. Check logs
@@ -71,6 +78,19 @@ docker-compose logs -f speedtest
 
 # 4. Stop
 docker-compose down
+```
+
+**Building locally:**
+
+```bash
+# 1. Build the image
+docker build -t speedtest-datadog .
+
+# 2. Update docker-compose.yaml to use local image
+# Uncomment 'build: .' and comment out 'image: ghcr.io/...'
+
+# 3. Run with docker-compose
+docker-compose up -d
 ```
 
 ## Configuration
@@ -84,9 +104,11 @@ docker-compose down
 | `METRIC_PREFIX` | No | `test.kyouhei` | Metric name prefix |
 | `DD_TAGS` | No | - | Comma-separated tags (e.g., `env:prod,team:ops`) |
 | `SPEEDTEST_FREQUENCY` | No | `300` | Test interval in seconds (300 = 5 minutes) |
+| `SPEEDTEST_SERVER_ID` | No | - | Specific server ID to test against (e.g., `7139` for Tsukuba). If not set or server unavailable, auto-selects best server. |
+| `HOST_HOSTNAME` | No | auto | **Important for Docker**: Set to actual hostname to differentiate metrics between multiple servers. Run `hostname` to get value. |
 | `ENABLE_LOGS` | No | `false` | Enable JSON structured logs to stdout |
 | `ENABLE_TRACES` | No | `false` | Enable APM traces (requires Datadog Agent) |
-| `DD_ENV` | No | `production` | Environment tag for traces |
+| `DD_ENV` | No | - | Environment tag for traces |
 
 ### Command Line Options
 
@@ -106,37 +128,46 @@ python speedtest_runner.py --dry-run --count 3
 
 ## Docker Image Publishing
 
-### GitHub Container Registry (ghcr.io)
+This project provides a pre-built multi-architecture image at:
+- **`ghcr.io/kyoppe/speedtest-datadog:latest`**
+- Supports: `linux/amd64` (Intel/AMD), `linux/arm64` (Apple Silicon, modern ARM)
+
+### Using Pre-built Image
+
+```bash
+# Pull and run (automatically selects correct architecture)
+docker pull ghcr.io/kyoppe/speedtest-datadog:latest
+```
+
+The `docker-compose.yaml` file is already configured to use this image.
+
+### Publishing Your Own Image
+
+#### GitHub Container Registry (ghcr.io)
 
 ```bash
 # 1. Login to GitHub Container Registry
 echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
-# 2. Build with proper tag
-docker build -t ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest .
+# 2. Build multi-architecture image
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest \
+  --push .
 
-# 3. Push to registry
-docker push ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest
-
-# 4. Use in other machines
-docker pull ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest
+# 3. Make image public (optional)
+# Go to: https://github.com/YOUR_GITHUB_USERNAME?tab=packages
+# Click on 'speedtest-datadog' → Package settings → Change visibility → Public
 ```
 
 **Note**: Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username.
 
-To create a GitHub Personal Access Token (PAT):
+#### Creating GitHub Personal Access Token (PAT)
+
 1. Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
 2. Generate new token with these scopes:
    - `write:packages`
    - `read:packages`
    - `delete:packages`
-
-### Make Image Public
-
-After pushing, go to:
-- `https://github.com/YOUR_GITHUB_USERNAME?tab=packages`
-- Click on `speedtest-datadog`
-- Package settings → Change visibility → Public
 
 ## Usage Examples
 
@@ -150,8 +181,9 @@ docker run -d \
   -e METRIC_PREFIX=kyouhei \
   -e DD_TAGS=env:home,location:tokyo \
   -e SPEEDTEST_FREQUENCY=300 \
+  -e HOST_HOSTNAME=$(hostname) \
   --restart unless-stopped \
-  ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest
+  ghcr.io/kyoppe/speedtest-datadog:latest
 ```
 
 ### Add to Existing docker-compose.yaml
@@ -159,7 +191,7 @@ docker run -d \
 ```yaml
 services:
   speedtest:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest
+    image: ghcr.io/kyoppe/speedtest-datadog:latest
     container_name: speedtest
     environment:
       - DD_API_KEY=${DD_API_KEY}
@@ -167,6 +199,7 @@ services:
       - METRIC_PREFIX=kyouhei
       - DD_TAGS=env:production,location:home
       - SPEEDTEST_FREQUENCY=300
+      - HOST_HOSTNAME=${HOST_HOSTNAME}  # Set in .env file
     restart: unless-stopped
 ```
 
@@ -271,8 +304,4 @@ ENABLE_LOGS=true ENABLE_TRACES=true python speedtest_runner.py --once
 ## License
 
 MIT
-
-## Contributing
-
-Issues and pull requests are welcome!
 
