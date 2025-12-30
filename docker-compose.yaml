@@ -28,19 +28,20 @@ services:
     
     restart: unless-stopped
 
-  # Datadog Agent for full observability (logs + traces)
-  datadog-agent:
-    image: datadog/agent:latest
-    container_name: datadog-agent
-    environment:
-      - DD_API_KEY=${DD_API_KEY}
-      - DD_SITE=datadoghq.com
-      - DD_LOGS_ENABLED=true
-      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
-      - DD_APM_ENABLED=true
-      - DD_APM_NON_LOCAL_TRAFFIC=true
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /proc/:/host/proc/:ro
-      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
-    restart: unless-stopped
+  # Optional: Datadog Agent for full observability (logs + traces)
+  # Uncomment if you want to collect logs and traces from containers
+  # datadog-agent:
+  #   image: datadog/agent:latest
+  #   container_name: datadog-agent
+  #   environment:
+  #     - DD_API_KEY=${DD_API_KEY}
+  #     - DD_SITE=datadoghq.com
+  #     - DD_LOGS_ENABLED=true
+  #     - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+  #     - DD_APM_ENABLED=true
+  #     - DD_APM_NON_LOCAL_TRAFFIC=true
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - /proc/:/host/proc/:ro
+  #     - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+  #   restart: unless-stopped
