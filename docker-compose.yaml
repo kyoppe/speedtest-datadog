@@ -2,9 +2,9 @@ version: '3.8'
 
 services:
   speedtest:
-    build: .
-    # Or use pre-built image:
-    # image: ghcr.io/[your-github-username]/speedtest-datadog:latest
+    # build: .
+    # Use pre-built image from GitHub Container Registry:
+    image: ghcr.io/kyoppe/speedtest-datadog:latest
     
     container_name: speedtest-datadog
     
