@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Metadata
+LABEL org.opencontainers.image.title="Speedtest to Datadog"
+LABEL org.opencontainers.image.description="Periodically runs internet speed tests and sends metrics to Datadog. Supports configurable intervals, server selection with auto-fallback, and observability features."
+LABEL org.opencontainers.image.licenses="MIT"
+
 # Set working directory
 WORKDIR /app
 
