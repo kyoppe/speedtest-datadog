@@ -16,6 +16,7 @@ services:
       - DD_SITE=datadoghq.com
       - METRIC_PREFIX=test.kyouhei
       - DD_TAGS=datacenter:machida
+      - SPEEDTEST_SERVER_ID=14623
       - SPEEDTEST_FREQUENCY=120
       - ENABLE_LOGS=true
       - ENABLE_TRACES=true

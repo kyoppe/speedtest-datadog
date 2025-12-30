@@ -65,21 +65,36 @@ def log_json(logger, level, message, **extra_fields):
     print(json.dumps(log_entry), file=sys.stdout)
 
 
-def run_speedtest(logger=None, enable_tracing=False):
+def run_speedtest(logger=None, enable_tracing=False, server_id=None):
     """Run speedtest-cli and return results as JSON"""
     
     # Start tracing span
     span = None
     if enable_tracing and DDTRACE_AVAILABLE and tracer:
         span = tracer.trace("speedtest.run", service="speedtest")
+        if server_id:
+            span.set_tag("speedtest.server_id_requested", server_id)
     
-    print("🚀 Running speed test...")
-    if logger:
-        log_json(logger, "info", "Starting speedtest", status="running")
+    # Build command
+    cmd = ['speedtest-cli', '--json']
+    server_selection = 'auto'
+    
+    if server_id:
+        cmd.extend(['--server', str(server_id)])
+        server_selection = 'manual'
+        print(f"🚀 Running speed test (server ID: {server_id})...")
+        if logger:
+            log_json(logger, "info", "Starting speedtest", status="running", 
+                    server_id=server_id, server_selection="manual")
+    else:
+        print("🚀 Running speed test (auto server selection)...")
+        if logger:
+            log_json(logger, "info", "Starting speedtest", status="running",
+                    server_selection="auto")
     
     try:
         result = subprocess.run(
-            ['speedtest-cli', '--json'],
+            cmd,
             capture_output=True,
             text=True,
             check=True,
@@ -93,18 +108,36 @@ def run_speedtest(logger=None, enable_tracing=False):
                     status="success",
                     download_mbps=round(data['download'] / 1_000_000, 2),
                     upload_mbps=round(data['upload'] / 1_000_000, 2),
-                    ping_ms=round(data['ping'], 2))
+                    ping_ms=round(data['ping'], 2),
+                    server_selection=server_selection)
         
         if span:
             span.set_tag("speedtest.download_mbps", round(data['download'] / 1_000_000, 2))
             span.set_tag("speedtest.upload_mbps", round(data['upload'] / 1_000_000, 2))
             span.set_tag("speedtest.ping_ms", round(data['ping'], 2))
+            span.set_tag("speedtest.server_selection", server_selection)
             span.finish()
         
-        return data
+        return data, server_selection
         
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Speed test failed: {e.stderr}"
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        # If manual server failed, try auto selection as fallback
+        if server_id:
+            error_msg = f"Speed test with server {server_id} failed, falling back to auto selection"
+            print(f"⚠️  {error_msg}")
+            if logger:
+                log_json(logger, "warning", error_msg, 
+                        status="fallback", 
+                        server_id=server_id,
+                        error=str(e))
+            if span:
+                span.set_tag("speedtest.fallback", True)
+            
+            # Retry with auto selection
+            return run_speedtest(logger=logger, enable_tracing=False, server_id=None)
+        
+        # If auto selection also failed, raise error
+        error_msg = f"Speed test failed: {str(e)}"
         print(f"❌ {error_msg}")
         if logger:
             log_json(logger, "error", error_msg, status="failed", error_type="process_error")
@@ -113,21 +146,12 @@ def run_speedtest(logger=None, enable_tracing=False):
             span.set_tag("error.message", error_msg)
             span.finish()
         sys.exit(1)
+        
     except subprocess.TimeoutExpired:
         error_msg = "Speed test timeout"
         print(f"❌ {error_msg}")
         if logger:
             log_json(logger, "error", error_msg, status="timeout", error_type="timeout")
-        if span:
-            span.set_tag("error", True)
-            span.set_tag("error.message", error_msg)
-            span.finish()
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        error_msg = f"JSON parse error: {e}"
-        print(f"❌ {error_msg}")
-        if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="json_decode_error")
         if span:
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
@@ -146,7 +170,7 @@ def run_speedtest(logger=None, enable_tracing=False):
         sys.exit(1)
 
 
-def parse_speedtest_results(data):
+def parse_speedtest_results(data, server_selection='auto'):
     """Parse speedtest results and generate metrics and tags"""
     # Metrics (convert to Mbps)
     metrics = {
@@ -162,6 +186,7 @@ def parse_speedtest_results(data):
         f"speedtest_server_country:{server.get('country', 'unknown')}",
         f"speedtest_server_sponsor:{server.get('sponsor', 'unknown')}",
         f"speedtest_server_id:{server.get('id', 'unknown')}",
+        f"server_selection:{server_selection}",
     ]
     
     # Client information (optional)
@@ -275,14 +300,14 @@ def dry_run_display(metrics, tags, prefix):
     print("\n" + "=" * 60)
 
 
-def run_speedtest_cycle(metric_prefix, dd_api_key, dd_site, user_tags, logger, enable_traces, dry_run):
+def run_speedtest_cycle(metric_prefix, dd_api_key, dd_site, user_tags, logger, enable_traces, dry_run, server_id):
     """Run a single speedtest cycle"""
     try:
         # Run speedtest
-        speedtest_data = run_speedtest(logger=logger, enable_tracing=enable_traces)
+        speedtest_data, server_selection = run_speedtest(logger=logger, enable_tracing=enable_traces, server_id=server_id)
         
         # Parse results
-        metrics, server_tags = parse_speedtest_results(speedtest_data)
+        metrics, server_tags = parse_speedtest_results(speedtest_data, server_selection)
         
         # Combine all tags
         all_tags = server_tags + user_tags
@@ -346,6 +371,16 @@ def main():
     enable_logs = os.getenv('ENABLE_LOGS', 'false').lower() == 'true'
     enable_traces = os.getenv('ENABLE_TRACES', 'false').lower() == 'true'
     frequency = int(os.getenv('SPEEDTEST_FREQUENCY', '300'))  # Default: 5 minutes
+    server_id_str = os.getenv('SPEEDTEST_SERVER_ID', '14623')  # Default: Bunkyo
+    
+    # Parse server ID
+    server_id = None
+    if server_id_str:
+        try:
+            server_id = int(server_id_str)
+        except ValueError:
+            print(f"⚠️  Invalid SPEEDTEST_SERVER_ID: {server_id_str}, using auto selection")
+            server_id = None
     
     # Parse user-defined tags
     user_tags = [tag.strip() for tag in dd_tags_str.split(',') if tag.strip()]
@@ -384,6 +419,7 @@ def main():
     print(f"   Metric Prefix: {metric_prefix}")
     print(f"   DD Site: {dd_site}")
     print(f"   User Tags: {user_tags if user_tags else '(none)'}")
+    print(f"   Server ID: {server_id if server_id else 'auto'}")
     print(f"   Logs: {'Enabled (JSON output)' if enable_logs else 'Disabled'}")
     print(f"   Traces: {tracing_status}")
     print(f"   Frequency: {frequency}s ({frequency // 60} minutes)")
@@ -452,7 +488,8 @@ def main():
                 user_tags=user_tags,
                 logger=logger,
                 enable_traces=enable_traces,
-                dry_run=args.dry_run
+                dry_run=args.dry_run,
+                server_id=server_id
             )
             test_duration = (datetime.now() - test_start).total_seconds()
             is_running = False
