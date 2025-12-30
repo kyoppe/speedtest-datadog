@@ -12,6 +12,7 @@ import subprocess
 import logging
 import time
 import signal
+import socket
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -63,6 +64,47 @@ def log_json(logger, level, message, **extra_fields):
     }
     # stdoutにJSON出力（Datadog Agentがあれば収集される）
     print(json.dumps(log_entry), file=sys.stdout)
+
+
+def get_host_info():
+    """Get hostname, container ID, and container name"""
+    container_id = None
+    container_name = None
+    hostname = None
+    
+    # Try to get full container ID from /proc/self/cgroup (works in Docker)
+    try:
+        with open('/proc/self/cgroup', 'r') as f:
+            for line in f:
+                if 'docker' in line or 'kubepods' in line:
+                    # Extract container ID from cgroup path
+                    parts = line.strip().split('/')
+                    if len(parts) > 0:
+                        potential_id = parts[-1]
+                        # Container IDs are typically 64 hex chars
+                        if len(potential_id) >= 64:
+                            container_id = potential_id  # Use full ID
+                            break
+                        elif len(potential_id) >= 12:
+                            # Fallback to shorter ID if full ID not available
+                            container_id = potential_id
+                            break
+    except (FileNotFoundError, IOError):
+        # Not in a container or /proc not available
+        pass
+    
+    # Get hostname
+    if container_id:
+        # Running in container
+        # Use HOST_HOSTNAME env var (passed from host via docker-compose)
+        hostname = os.getenv('HOST_HOSTNAME', socket.gethostname())
+        # Container name is typically the hostname in Docker
+        container_name = socket.gethostname()
+    else:
+        # Not in container, just use hostname
+        hostname = socket.gethostname()
+    
+    return hostname, container_id, container_name
 
 
 def run_speedtest(logger=None, enable_tracing=False, server_id=None):
@@ -179,15 +221,25 @@ def parse_speedtest_results(data, server_selection='auto'):
         'ping': data['ping']                        # ms
     }
     
+    # Get host information
+    hostname, container_id, container_name = get_host_info()
+    
     # Server information as tags
     server = data.get('server', {})
     tags = [
+        f"host:{hostname}",  # Use actual hostname
         f"speedtest_server_name:{server.get('name', 'unknown')}",
         f"speedtest_server_country:{server.get('country', 'unknown')}",
         f"speedtest_server_sponsor:{server.get('sponsor', 'unknown')}",
         f"speedtest_server_id:{server.get('id', 'unknown')}",
         f"server_selection:{server_selection}",
     ]
+    
+    # Add container tags if running in container
+    if container_id:
+        tags.append(f"container_id:{container_id}")
+    if container_name:
+        tags.append(f"container_name:{container_name}")
     
     # Client information (optional)
     client = data.get('client', {})

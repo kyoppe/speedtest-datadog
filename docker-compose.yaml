@@ -12,6 +12,9 @@ services:
       # Secrets (from .env file)
       - DD_API_KEY=${DD_API_KEY}
       
+      # Host information (passed from host environment)
+      - HOST_HOSTNAME=${HOSTNAME}
+      
       # Configuration (edit these values directly)
       - DD_SITE=datadoghq.com
       - METRIC_PREFIX=test.kyouhei
