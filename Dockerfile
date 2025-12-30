@@ -9,8 +9,16 @@ LABEL org.opencontainers.image.licenses="MIT"
 WORKDIR /app
 
 # Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-armv7.txt ./
+
+# Use different requirements based on architecture
+RUN if [ "$(uname -m)" = "armv7l" ]; then \
+        echo "Installing for ARMv7 (without ddtrace)..."; \
+        pip install --no-cache-dir -r requirements-armv7.txt; \
+    else \
+        echo "Installing for $(uname -m)..."; \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 # Copy application
 COPY speedtest_runner.py .
