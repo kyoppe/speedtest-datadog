@@ -371,7 +371,7 @@ def main():
     enable_logs = os.getenv('ENABLE_LOGS', 'false').lower() == 'true'
     enable_traces = os.getenv('ENABLE_TRACES', 'false').lower() == 'true'
     frequency = int(os.getenv('SPEEDTEST_FREQUENCY', '300'))  # Default: 5 minutes
-    server_id_str = os.getenv('SPEEDTEST_SERVER_ID', '14623')  # Default: Bunkyo
+    server_id_str = os.getenv('SPEEDTEST_SERVER_ID', '')  # Default: auto selection
     
     # Parse server ID
     server_id = None
