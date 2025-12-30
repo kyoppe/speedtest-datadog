@@ -267,6 +267,9 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
         
         timestamp = int(datetime.now().timestamp())
         
+        # Extract host from tags for metric submission
+        host_tag = next((tag.split(':', 1)[1] for tag in tags if tag.startswith('host:')), None)
+        
         # Send metrics
         print("\n📊 Sending metrics:")
         for metric_name, value in metrics.items():
@@ -276,7 +279,8 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
             api.Metric.send(
                 metric=full_metric_name,
                 points=[(timestamp, value)],
-                tags=tags
+                tags=tags,
+                host=host_tag  # Explicitly set host to prevent SDK from auto-adding container ID
             )
             print(f"  📤 {full_metric_name} = {value:.2f} {unit}")
         
@@ -285,7 +289,8 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
             metric=f"{prefix}.speedtest.test_count",
             points=[(timestamp, 1)],
             tags=tags,
-            type='count'
+            type='count',
+            host=host_tag  # Explicitly set host to prevent SDK from auto-adding container ID
         )
         print(f"  📤 {prefix}.speedtest.test_count = 1 (count)")
         
