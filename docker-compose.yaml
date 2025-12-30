@@ -19,7 +19,7 @@ services:
       
       # Configuration (edit these values directly)
       - DD_SITE=datadoghq.com
-      - METRIC_PREFIX=test.kyouhei
+      - METRIC_PREFIX=kyouhei
       - DD_TAGS=datacenter:machida
       - SPEEDTEST_SERVER_ID=7139  # Comment in to use auto server selection(7139 is Tsukuba)
       - SPEEDTEST_FREQUENCY=120
@@ -28,18 +28,19 @@ services:
     
     restart: unless-stopped
 
-  # Uncomment to enable full observability (logs + traces)
-  # datadog-agent:
-  #   image: datadog/agent:latest
-  #   environment:
-  #     - DD_API_KEY=${DD_API_KEY}
-  #     - DD_SITE=${DD_SITE:-datadoghq.com}
-  #     - DD_LOGS_ENABLED=true
-  #     - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
-  #     - DD_APM_ENABLED=true
-  #     - DD_APM_NON_LOCAL_TRAFFIC=true
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock:ro
-  #     - /proc/:/host/proc/:ro
-  #     - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
-  #   restart: unless-stopped
+  # Datadog Agent for full observability (logs + traces)
+  datadog-agent:
+    image: datadog/agent:latest
+    container_name: datadog-agent
+    environment:
+      - DD_API_KEY=${DD_API_KEY}
+      - DD_SITE=datadoghq.com
+      - DD_LOGS_ENABLED=true
+      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+      - DD_APM_ENABLED=true
+      - DD_APM_NON_LOCAL_TRAFFIC=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    restart: unless-stopped

@@ -186,7 +186,7 @@ def run_speedtest(logger=None, enable_tracing=False, server_id=None):
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
-        sys.exit(1)
+        raise Exception(error_msg)
         
     except subprocess.TimeoutExpired:
         error_msg = "Speed test timeout"
@@ -197,7 +197,7 @@ def run_speedtest(logger=None, enable_tracing=False, server_id=None):
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
-        sys.exit(1)
+        raise Exception(error_msg)
     except FileNotFoundError:
         error_msg = "speedtest-cli not installed"
         print(f"❌ {error_msg}")
@@ -208,7 +208,7 @@ def run_speedtest(logger=None, enable_tracing=False, server_id=None):
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
-        sys.exit(1)
+        raise Exception(error_msg)
 
 
 def parse_speedtest_results(data, server_selection='auto'):
@@ -317,7 +317,7 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
-        sys.exit(1)
+        raise Exception(error_msg)
     except Exception as e:
         error_msg = f"Datadog API error: {e}"
         print(f"❌ {error_msg}")
@@ -327,7 +327,7 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
-        sys.exit(1)
+        raise Exception(error_msg)
 
 
 def dry_run_display(metrics, tags, prefix):
