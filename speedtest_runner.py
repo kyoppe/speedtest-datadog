@@ -68,41 +68,40 @@ def log_json(logger, level, message, **extra_fields):
 
 def get_host_info():
     """Get hostname, container ID, and container name"""
-    container_id = None
-    container_name = None
-    hostname = None
+    # Get host hostname (passed via env var, or use local hostname)
+    host_hostname = os.getenv('HOST_HOSTNAME')
     
-    # Try to get full container ID from /proc/self/cgroup (works in Docker)
-    try:
-        with open('/proc/self/cgroup', 'r') as f:
-            for line in f:
-                if 'docker' in line or 'kubepods' in line:
-                    # Extract container ID from cgroup path
-                    parts = line.strip().split('/')
-                    if len(parts) > 0:
-                        potential_id = parts[-1]
-                        # Container IDs are typically 64 hex chars
-                        if len(potential_id) >= 64:
-                            container_id = potential_id  # Use full ID
-                            break
-                        elif len(potential_id) >= 12:
-                            # Fallback to shorter ID if full ID not available
-                            container_id = potential_id
-                            break
-    except (FileNotFoundError, IOError):
-        # Not in a container or /proc not available
-        pass
+    # Get container info
+    container_name = os.getenv('CONTAINER_NAME')
     
-    # Get hostname
-    if container_id:
-        # Running in container
-        # Use HOST_HOSTNAME env var (passed from host via docker-compose)
-        hostname = os.getenv('HOST_HOSTNAME', socket.gethostname())
-        # Container name is typically the hostname in Docker
-        container_name = socket.gethostname()
+    # If CONTAINER_NAME is set, we're in a container
+    if container_name:
+        # Try to get full container ID from /proc/self/mountinfo
+        container_id = None
+        try:
+            with open('/proc/self/mountinfo', 'r') as f:
+                for line in f:
+                    if '/docker/containers/' in line:
+                        # Extract full container ID from path like: /docker/containers/<full_id>/...
+                        parts = line.split('/docker/containers/')
+                        if len(parts) > 1:
+                            container_id = parts[1].split('/')[0]
+                            if len(container_id) == 64:  # Full container ID
+                                break
+        except (FileNotFoundError, IOError):
+            pass
+        
+        # Fallback to hostname (short container ID) if full ID not found
+        if not container_id:
+            container_id = socket.gethostname()
+        
+        # Use HOST_HOSTNAME if set, otherwise fall back to container hostname (not ideal)
+        hostname = host_hostname if host_hostname else socket.gethostname()
     else:
-        # Not in container, just use hostname
-        hostname = socket.gethostname()
+        # Not in container, use local hostname
+        hostname = host_hostname if host_hostname else socket.gethostname()
+        container_id = None
+        container_name = None
     
     return hostname, container_id, container_name
 

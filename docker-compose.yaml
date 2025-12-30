@@ -12,8 +12,10 @@ services:
       # Secrets (from .env file)
       - DD_API_KEY=${DD_API_KEY}
       
-      # Host information (passed from host environment)
-      - HOST_HOSTNAME=${HOSTNAME}
+      # Host and container information (from .env file)
+      # HOST_HOSTNAME: Set to actual hostname in .env file
+      - HOST_HOSTNAME=${HOST_HOSTNAME:-}
+      - CONTAINER_NAME=speedtest-datadog
       
       # Configuration (edit these values directly)
       - DD_SITE=datadoghq.com
