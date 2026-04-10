@@ -3,3 +3,4 @@ datadog==0.49.1
 python-dotenv==1.0.0
 # ddtrace is excluded for armv7 (build fails)
 
+
