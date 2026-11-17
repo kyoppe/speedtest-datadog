@@ -19,7 +19,6 @@ services:
       
       # Configuration (edit these values directly)
       - DD_SITE=datadoghq.com
-      - METRIC_PREFIX=kyouhei
       - DD_TAGS=datacenter:machida
       - SPEEDTEST_FREQUENCY=120
       - ENABLE_LOGS=true

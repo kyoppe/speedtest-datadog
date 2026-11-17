@@ -20,6 +20,17 @@ A Docker container that periodically runs internet speed tests and sends the res
 | `{prefix}.speedtest.ping` | gauge | ms | Ping latency |
 | `{prefix}.speedtest.test_count` | count | - | Number of tests executed |
 
+The default production prefix is `kyouhei`, so the production metric names are
+`kyouhei.speedtest.download`, `kyouhei.speedtest.upload`, `kyouhei.speedtest.ping`,
+and `kyouhei.speedtest.test_count`. Set `METRICS_TEST_MODE=true` to use the
+`test.kyouhei` prefix when `METRIC_PREFIX` is not set. A custom `METRIC_PREFIX`
+remains supported and is followed by `.speedtest` (for example,
+`METRIC_PREFIX=customer.speedtest` produces `customer.speedtest.speedtest.*`).
+The production metric names are written as literals at the Datadog send call
+sites so Metrics Catalog source-code detection can link them to this repository.
+Test and custom-prefix names are generated dynamically and are not intended for
+that catalog linkage.
+
 ### Tags (automatically added)
 
 - `host`: Hostname of the machine running the test
@@ -101,7 +112,8 @@ docker-compose up -d
 |----------|----------|---------|-------------|
 | `DD_API_KEY` | ✅ Yes | - | Datadog API Key |
 | `DD_SITE` | No | `datadoghq.com` | Datadog site (e.g., `datadoghq.eu`) |
-| `METRIC_PREFIX` | No | `test.kyouhei` | Metric name prefix |
+| `METRIC_PREFIX` | No | `kyouhei` | Custom metric prefix. When set, it takes precedence over `METRICS_TEST_MODE` and is followed by `.speedtest` |
+| `METRICS_TEST_MODE` | No | `false` | When `true` and `METRIC_PREFIX` is unset, use `test.kyouhei.speedtest.*` |
 | `DD_TAGS` | No | - | Comma-separated tags (e.g., `env:prod,team:ops`) |
 | `SPEEDTEST_FREQUENCY` | No | `300` | Test interval in seconds (300 = 5 minutes) |
 | `SPEEDTEST_COUNTRY_FILE` | No | `/config/speedtest-country` | File with one country code (`JP`) or country name (`Japan`). Read before every test. Servers in that country are tried nearest-first. A failure tries the next server in the same country. |
@@ -111,6 +123,11 @@ docker-compose up -d
 | `ENABLE_TRACES` | No | `false` | Enable APM traces (requires Datadog Agent) |
 | `DD_AGENT_HOST` | No | - | Datadog Agent hostname for APM traces (for example, `datadog-agent` in Docker Compose) |
 | `DD_ENV` | No | - | Environment tag for traces |
+| `DD_VERSION` | No | Image version | Version attached to traces and structured logs |
+
+When `ENABLE_LOGS=true`, every stdout line is emitted as one JSON log event.
+Each event includes `event_type` and `dd.version`; logs written while a trace
+span is active also include `dd.trace_id` and `dd.span_id`.
 
 ### Country file
 
@@ -207,7 +224,6 @@ docker run -d \
   --name speedtest \
   -e DD_API_KEY=your_api_key \
   -e DD_SITE=datadoghq.com \
-  -e METRIC_PREFIX=kyouhei \
   -e DD_TAGS=env:home,location:tokyo \
   -e SPEEDTEST_FREQUENCY=300 \
   -e HOST_HOSTNAME=$(hostname) \
@@ -225,7 +241,6 @@ services:
     environment:
       - DD_API_KEY=${DD_API_KEY}
       - DD_SITE=datadoghq.com
-      - METRIC_PREFIX=kyouhei
       - DD_TAGS=env:production,location:home
       - SPEEDTEST_FREQUENCY=300
       - HOST_HOSTNAME=${HOST_HOSTNAME}  # Set in .env file
@@ -301,7 +316,7 @@ SPEEDTEST_FREQUENCY=600
 ### Check metrics in Datadog
 
 1. Go to Datadog → Metrics → Explorer
-2. Search for: `test.kyouhei.speedtest.*` or your `METRIC_PREFIX`
+2. Search for: `kyouhei.speedtest.*` (or `test.kyouhei.speedtest.*` in test mode)
 3. Create a dashboard to visualize:
    - Download/upload speeds over time
    - Ping latency trends

@@ -1,7 +1,13 @@
 """Unit tests for country filtering. No network and no speedtest-cli."""
 
+import io
+import json
+import os
+import sys
 import tempfile
+import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +23,142 @@ def _server(server_id, cc, country, distance, name='Tokyo'):
         'sponsor': 'Example',
         'name': name,
     }
+
+
+class MetricNamingTest(unittest.TestCase):
+    def test_production_metric_names_are_stable(self):
+        self.assertEqual(
+            speedtest_runner.resolve_metric_name('kyouhei', 'download'),
+            'kyouhei.speedtest.download',
+        )
+        self.assertEqual(
+            speedtest_runner.resolve_metric_name('kyouhei', 'test_count'),
+            'kyouhei.speedtest.test_count',
+        )
+
+    def test_production_literals_are_present_at_metric_send_calls(self):
+        source = Path(speedtest_runner.__file__).read_text(encoding='utf-8')
+        for metric_name in (
+            'kyouhei.speedtest.download',
+            'kyouhei.speedtest.upload',
+            'kyouhei.speedtest.ping',
+            'kyouhei.speedtest.test_count',
+        ):
+            self.assertIn(f'metric="{metric_name}"', source)
+
+    def test_test_mode_and_custom_prefixes_are_dynamic(self):
+        self.assertEqual(
+            speedtest_runner.resolve_metric_prefix(None, metrics_test_mode=True),
+            'test.kyouhei',
+        )
+        self.assertEqual(
+            speedtest_runner.resolve_metric_name('test.kyouhei', 'download'),
+            'test.kyouhei.speedtest.download',
+        )
+        self.assertEqual(
+            speedtest_runner.resolve_metric_name('customer', 'download'),
+            'customer.speedtest.download',
+        )
+        self.assertEqual(
+            speedtest_runner.resolve_metric_name('customer.speedtest', 'download'),
+            'customer.speedtest.speedtest.download',
+        )
+
+    def test_explicit_prefix_takes_precedence_over_test_mode(self):
+        self.assertEqual(
+            speedtest_runner.resolve_metric_prefix('customer', metrics_test_mode=True),
+            'customer',
+        )
+
+    def test_empty_prefix_uses_default_or_test_mode(self):
+        self.assertEqual(
+            speedtest_runner.resolve_metric_prefix('', metrics_test_mode=False),
+            'kyouhei',
+        )
+        self.assertEqual(
+            speedtest_runner.resolve_metric_prefix('  ', metrics_test_mode=True),
+            'test.kyouhei',
+        )
+
+
+class MetricSendTest(unittest.TestCase):
+    def test_production_metrics_are_sent_with_expected_names(self):
+        sent_metrics = []
+        fake_api = types.SimpleNamespace(
+            Metric=types.SimpleNamespace(
+                send=lambda **kwargs: sent_metrics.append(kwargs),
+            ),
+        )
+        fake_datadog = types.SimpleNamespace(
+            initialize=mock.Mock(),
+            api=fake_api,
+        )
+        metrics = {
+            'download': 100.0,
+            'upload': 50.0,
+            'ping': 10.0,
+        }
+
+        with mock.patch.dict(sys.modules, {'datadog': fake_datadog}):
+            speedtest_runner.send_to_datadog(
+                metrics,
+                [],
+                'kyouhei',
+                'api-key',
+                'datadoghq.com',
+            )
+
+        self.assertEqual(
+            [metric['metric'] for metric in sent_metrics],
+            [
+                'kyouhei.speedtest.download',
+                'kyouhei.speedtest.upload',
+                'kyouhei.speedtest.ping',
+                'kyouhei.speedtest.test_count',
+            ],
+        )
+
+
+class StructuredLoggingTest(unittest.TestCase):
+    def test_log_includes_version_and_trace_context(self):
+        span = mock.Mock(trace_id=123, span_id=456)
+        tracer = mock.Mock()
+        tracer.current_span.return_value = span
+        output = io.StringIO()
+
+        with mock.patch.object(speedtest_runner, 'tracer', tracer), \
+                mock.patch.object(speedtest_runner, 'DDTRACE_AVAILABLE', True), \
+                mock.patch.dict(os.environ, {'DD_VERSION': 'abc123'}, clear=False), \
+                mock.patch.object(speedtest_runner, '_JSON_OUTPUT_STREAM', None), \
+                redirect_stdout(output):
+            speedtest_runner.log_json(
+                None,
+                'info',
+                'test message',
+                event_type='test_event',
+            )
+
+        entry = json.loads(output.getvalue())
+        self.assertEqual(entry['event_type'], 'test_event')
+        self.assertEqual(entry['dd.version'], 'abc123')
+        self.assertEqual(entry['dd.trace_id'], '123')
+        self.assertEqual(entry['dd.span_id'], '456')
+
+    def test_plain_print_is_json_when_output_is_enabled(self):
+        output = io.StringIO()
+        original_stdout = sys.stdout
+        try:
+            with redirect_stdout(output):
+                speedtest_runner.enable_json_output()
+                print('plain output')
+                sys.stdout.flush()
+        finally:
+            sys.stdout = original_stdout
+            speedtest_runner._JSON_OUTPUT_STREAM = None
+
+        entry = json.loads(output.getvalue())
+        self.assertEqual(entry['event_type'], 'console_output')
+        self.assertEqual(entry['message'], 'plain output')
 
 
 class SelectServersByCountryTest(unittest.TestCase):
