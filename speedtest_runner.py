@@ -31,6 +31,100 @@ except ImportError:
 
 # Graceful shutdown flag
 shutdown_flag = False
+_JSON_OUTPUT_STREAM = None
+_ACTIVE_LOGGER = None
+
+
+def parse_boolean(value):
+    """Parse a human-friendly boolean environment value."""
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def resolve_metric_prefix(explicit_prefix=None, metrics_test_mode=False):
+    """Resolve the base prefix while preserving custom prefix compatibility."""
+    if explicit_prefix and explicit_prefix.strip():
+        return explicit_prefix.strip()
+    if metrics_test_mode:
+        return 'test.kyouhei'
+    return 'kyouhei'
+
+
+def resolve_metric_name(prefix, metric_name):
+    """Resolve test and custom metric names for display and dynamic sends."""
+    return f'{prefix}.speedtest.{metric_name}'
+
+
+def _trace_context():
+    """Return Datadog trace identifiers for the currently active span."""
+    if not DDTRACE_AVAILABLE or not tracer:
+        return {}
+    try:
+        span = tracer.current_span()
+    except Exception:
+        return {}
+    if not span:
+        return {}
+    return {
+        'dd.trace_id': str(span.trace_id),
+        'dd.span_id': str(span.span_id),
+    }
+
+
+def _write_json_log(log_entry):
+    output = _JSON_OUTPUT_STREAM or sys.stdout
+    output.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+    output.flush()
+
+
+class JsonOutput:
+    """Convert ordinary stdout lines into structured JSON log events."""
+
+    def __init__(self, output, stream_name='stdout'):
+        self.output = output
+        self.stream_name = stream_name
+        self.buffer = ''
+
+    def write(self, data):
+        self.buffer += data
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            if line.strip():
+                log_json(
+                    _ACTIVE_LOGGER,
+                    'info',
+                    line,
+                    event_type='console_output',
+                    stream=self.stream_name,
+                )
+        return len(data)
+
+    def flush(self):
+        if self.buffer.strip():
+            log_json(
+                _ACTIVE_LOGGER,
+                'info',
+                self.buffer,
+                event_type='console_output',
+                stream=self.stream_name,
+            )
+            self.buffer = ''
+        self.output.flush()
+
+    def isatty(self):
+        return self.output.isatty()
+
+    @property
+    def encoding(self):
+        return self.output.encoding
+
+
+def enable_json_output():
+    """Wrap stdout so legacy print calls remain structured when logs are enabled."""
+    global _JSON_OUTPUT_STREAM
+    if isinstance(sys.stdout, JsonOutput):
+        return
+    _JSON_OUTPUT_STREAM = sys.stdout
+    sys.stdout = JsonOutput(_JSON_OUTPUT_STREAM)
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
@@ -56,14 +150,18 @@ def setup_json_logging():
 
 def log_json(logger, level, message, **extra_fields):
     """JSON形式でログを出力（構造化ログ）"""
+    event_type = extra_fields.pop('event_type', 'speedtest_event')
     log_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         "service": "speedtest",
         "message": message,
+        "level": level,
+        "event_type": event_type,
+        "dd.version": os.getenv('DD_VERSION', 'unknown'),
         **extra_fields
     }
-    # stdoutにJSON出力（Datadog Agentがあれば収集される）
-    print(json.dumps(log_entry), file=sys.stdout)
+    log_entry.update(_trace_context())
+    _write_json_log(log_entry)
 
 
 def get_host_info():
@@ -450,25 +548,57 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
         
         # Send metrics
         print("\n📊 Sending metrics:")
-        for metric_name, value in metrics.items():
-            full_metric_name = f"{prefix}.speedtest.{metric_name}"
-            unit = "Mbps" if metric_name in ['download', 'upload'] else "ms"
-            
+        if prefix == 'kyouhei':
+            # Keep production metric names as literals at the API call sites so
+            # Datadog Metrics Catalog can link them back to this source code.
             api.Metric.send(
-                metric=full_metric_name,
-                points=[(timestamp, value)],
+                metric="kyouhei.speedtest.download",
+                points=[(timestamp, metrics['download'])],
                 tags=tags
             )
-            print(f"  📤 {full_metric_name} = {value:.2f} {unit}")
-        
-        # Test execution counter
-        api.Metric.send(
-            metric=f"{prefix}.speedtest.test_count",
-            points=[(timestamp, 1)],
-            tags=tags,
-            type='count'
-        )
-        print(f"  📤 {prefix}.speedtest.test_count = 1 (count)")
+            print(f"  📤 kyouhei.speedtest.download = {metrics['download']:.2f} Mbps")
+
+            api.Metric.send(
+                metric="kyouhei.speedtest.upload",
+                points=[(timestamp, metrics['upload'])],
+                tags=tags
+            )
+            print(f"  📤 kyouhei.speedtest.upload = {metrics['upload']:.2f} Mbps")
+
+            api.Metric.send(
+                metric="kyouhei.speedtest.ping",
+                points=[(timestamp, metrics['ping'])],
+                tags=tags
+            )
+            print(f"  📤 kyouhei.speedtest.ping = {metrics['ping']:.2f} ms")
+
+            api.Metric.send(
+                metric="kyouhei.speedtest.test_count",
+                points=[(timestamp, 1)],
+                tags=tags,
+                type='count'
+            )
+            print("  📤 kyouhei.speedtest.test_count = 1 (count)")
+        else:
+            for metric_name, value in metrics.items():
+                full_metric_name = resolve_metric_name(prefix, metric_name)
+                unit = "Mbps" if metric_name in ['download', 'upload'] else "ms"
+
+                api.Metric.send(
+                    metric=full_metric_name,
+                    points=[(timestamp, value)],
+                    tags=tags
+                )
+                print(f"  📤 {full_metric_name} = {value:.2f} {unit}")
+
+            test_count_metric_name = resolve_metric_name(prefix, 'test_count')
+            api.Metric.send(
+                metric=test_count_metric_name,
+                points=[(timestamp, 1)],
+                tags=tags,
+                type='count'
+            )
+            print(f"  📤 {test_count_metric_name} = 1 (count)")
         
         # Display tags
         print(f"\n🏷️  Tags ({len(tags)}):")
@@ -479,6 +609,7 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
         
         if logger:
             log_json(logger, "info", "Metrics sent to Datadog",
+                    event_type="metrics_sent",
                     status="success",
                     metric_count=len(metrics) + 1,
                     tag_count=len(tags))
@@ -493,7 +624,9 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
         print(f"❌ {error_msg}")
         print("   Install: pip install datadog")
         if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="import_error")
+            log_json(logger, "error", error_msg,
+                    event_type="metrics_send_failed",
+                    status="failed", error_type="import_error")
         if span:
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
@@ -503,7 +636,9 @@ def send_to_datadog(metrics, tags, prefix, api_key, site, logger=None, enable_tr
         error_msg = f"Datadog API error: {e}"
         print(f"❌ {error_msg}")
         if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="api_error")
+            log_json(logger, "error", error_msg,
+                    event_type="metrics_send_failed",
+                    status="failed", error_type="api_error")
         if span:
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
@@ -519,11 +654,12 @@ def dry_run_display(metrics, tags, prefix):
     
     print("\n📊 Metrics:")
     for metric_name, value in metrics.items():
-        full_metric_name = f"{prefix}.speedtest.{metric_name}"
+        full_metric_name = resolve_metric_name(prefix, metric_name)
         unit = "Mbps" if metric_name in ['download', 'upload'] else "ms"
         print(f"  {full_metric_name}: {value:.2f} {unit}")
     
-    print(f"\n  {prefix}.speedtest.test_count: 1 (count)")
+    test_count_metric_name = resolve_metric_name(prefix, 'test_count')
+    print(f"\n  {test_count_metric_name}: 1 (count)")
     
     print("\n🏷️  Tags:")
     for tag in tags:
@@ -565,7 +701,9 @@ def run_speedtest_cycle(metric_prefix, dd_api_key, dd_site, user_tags, logger, e
         error_msg = f"Speedtest cycle failed: {e}"
         print(f"❌ {error_msg}")
         if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="cycle_error")
+            log_json(logger, "error", error_msg,
+                    event_type="speedtest_cycle_failed",
+                    status="failed", error_type="cycle_error")
         return False
 
 
@@ -604,7 +742,9 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Load configuration from environment variables
-    metric_prefix = os.getenv('METRIC_PREFIX', 'test.kyouhei')
+    explicit_metric_prefix = os.getenv('METRIC_PREFIX')
+    metrics_test_mode = parse_boolean(os.getenv('METRICS_TEST_MODE', 'false'))
+    metric_prefix = resolve_metric_prefix(explicit_metric_prefix, metrics_test_mode)
     dd_site = os.getenv('DD_SITE', 'datadoghq.com')
     dd_api_key = os.getenv('DD_API_KEY', '')
     dd_tags_str = os.getenv('DD_TAGS', '')
@@ -614,6 +754,14 @@ def main():
     server_id_str = os.getenv('SPEEDTEST_SERVER_ID', '')  # Default: auto selection
     country_file = os.getenv('SPEEDTEST_COUNTRY_FILE', DEFAULT_COUNTRY_FILE)
     
+    # Setup logger (if logs enabled) before any configuration warnings are printed.
+    logger = None
+    if enable_logs:
+        logger = setup_json_logging()
+        global _ACTIVE_LOGGER
+        _ACTIVE_LOGGER = logger
+        enable_json_output()
+
     # Parse server ID
     server_id = None
     if server_id_str:
@@ -626,22 +774,19 @@ def main():
     # Parse user-defined tags
     user_tags = [tag.strip() for tag in dd_tags_str.split(',') if tag.strip()]
     
-    # Setup logger (if logs enabled)
-    logger = None
-    if enable_logs:
-        logger = setup_json_logging()
-    
     # Check tracing status
     tracing_status = "Disabled"
     if enable_traces:
         if DDTRACE_AVAILABLE:
-            tracing_status = "Enabled (Agent: localhost:8126)"
+            tracing_status = (
+                f"Enabled (Agent: {os.getenv('DD_AGENT_HOST', 'localhost')}:8126)"
+            )
             # Set service name and env
             if tracer:
                 tracer.set_tags({
                     "env": os.getenv("DD_ENV", "dev"),
                     "service": "speedtest",
-                    "version": os.getenv("DD_VERSION", "1.0.0")
+                    "version": os.getenv("DD_VERSION", "unknown")
                 })
         else:
             tracing_status = "Disabled (ddtrace not installed)"
@@ -658,6 +803,7 @@ def main():
     
     print(f"⚙️  Configuration:")
     print(f"   Metric Prefix: {metric_prefix}")
+    print(f"   Metrics Test Mode: {metrics_test_mode}")
     print(f"   DD Site: {dd_site}")
     print(f"   User Tags: {user_tags if user_tags else '(none)'}")
     print(f"   Server ID: {server_id if server_id else 'auto (used when the country file is empty)'}")
@@ -673,11 +819,14 @@ def main():
         print("❌ DD_API_KEY is not set")
         print("   Create .env file or set environment variable")
         if logger:
-            log_json(logger, "error", "DD_API_KEY not set", status="failed")
+            log_json(logger, "error", "DD_API_KEY not set",
+                    event_type="configuration_invalid",
+                    status="failed")
         sys.exit(1)
     
     if logger:
         log_json(logger, "info", "Speedtest service started",
+                event_type="service_started",
                 status="initialized",
                 metric_prefix=metric_prefix,
                 logs_enabled=enable_logs,
@@ -703,6 +852,7 @@ def main():
                 print(f"⚠️  Previous test still running, skipping this cycle (skipped: {skipped_count})")
                 if logger:
                     log_json(logger, "warning", "Skipped cycle due to long-running test",
+                            event_type="speedtest_cycle_skipped",
                             status="skipped", skipped_count=skipped_count)
                 # Schedule next run
                 next_run_time += timedelta(seconds=frequency)
@@ -742,12 +892,14 @@ def main():
                 print(f"⚠️  Test took {test_duration:.1f}s (longer than frequency {frequency}s)")
                 if logger:
                     log_json(logger, "warning", "Test duration exceeds frequency",
+                            event_type="speedtest_duration_exceeded",
                             test_duration=test_duration, frequency=frequency)
             
             # Check if we've reached max count
             if max_count is not None and test_count >= max_count:
                 if logger:
                     log_json(logger, "info", "Reached max count, exiting",
+                            event_type="service_completed",
                             status="completed", test_count=test_count, 
                             max_count=max_count, skipped_count=skipped_count)
                 break
@@ -777,6 +929,7 @@ def main():
     # Shutdown
     if logger:
         log_json(logger, "info", "Speedtest service stopped",
+                event_type="service_stopped",
                 status="shutdown", total_tests=test_count, skipped_tests=skipped_count)
     print(f"\n✅ Service stopped")
     print(f"   Total tests run: {test_count}")

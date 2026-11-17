@@ -28,7 +28,6 @@ COPY speedtest_runner.py .
 
 # Default environment variables
 ENV DD_SITE=datadoghq.com \
-    METRIC_PREFIX=test.kyouhei \
     SPEEDTEST_FREQUENCY=300 \
     ENABLE_LOGS=false \
     ENABLE_TRACES=false \
