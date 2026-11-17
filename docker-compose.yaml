@@ -19,6 +19,9 @@ services:
       
       # Configuration (edit these values directly)
       - DD_SITE=datadoghq.com
+      # Leave METRIC_PREFIX empty to use the application default or test mode.
+      - METRIC_PREFIX=${METRIC_PREFIX:-}
+      - METRICS_TEST_MODE=${METRICS_TEST_MODE:-false}
       - DD_TAGS=datacenter:machida
       - SPEEDTEST_FREQUENCY=120
       - ENABLE_LOGS=true
