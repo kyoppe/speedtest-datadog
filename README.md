@@ -27,7 +27,7 @@ A Docker container that periodically runs internet speed tests and sends the res
 - `speedtest_server_country`: Test server country
 - `speedtest_server_sponsor`: Test server sponsor/ISP
 - `speedtest_server_id`: Test server ID
-- `server_selection`: `manual` or `auto` (whether a specific server was requested)
+- `server_selection`: `manual`, `auto`, or `country` (how the server was selected)
 - `isp`: Your ISP name
 - `container_id`: Full container ID (64 chars, Docker only)
 - `container_name`: Container name (Docker only)
@@ -104,11 +104,32 @@ docker-compose up -d
 | `METRIC_PREFIX` | No | `test.kyouhei` | Metric name prefix |
 | `DD_TAGS` | No | - | Comma-separated tags (e.g., `env:prod,team:ops`) |
 | `SPEEDTEST_FREQUENCY` | No | `300` | Test interval in seconds (300 = 5 minutes) |
-| `SPEEDTEST_SERVER_ID` | No | - | Specific server ID to test against (e.g., `7139` for Tsukuba). If not set or server unavailable, auto-selects best server. |
+| `SPEEDTEST_COUNTRY_FILE` | No | `/config/speedtest-country` | File with one country code (`JP`) or country name (`Japan`). Read before every test. Servers in that country are tried nearest-first. A failure tries the next server in the same country. |
+| `SPEEDTEST_SERVER_ID` | No | - | Server ID used only when the country file is missing or blank (e.g., `7139` for Tsukuba). If that server is unavailable, automatic selection is used. |
 | `HOST_HOSTNAME` | No | auto | **Important for Docker**: Set to actual hostname to differentiate metrics between multiple servers. Run `hostname` to get value. |
 | `ENABLE_LOGS` | No | `false` | Enable JSON structured logs to stdout |
 | `ENABLE_TRACES` | No | `false` | Enable APM traces (requires Datadog Agent) |
 | `DD_ENV` | No | - | Environment tag for traces |
+
+### Country file
+
+Put a country code or country name in the file named by `SPEEDTEST_COUNTRY_FILE`. The process reads it before every test, so changing the file does not require a restart.
+
+```text
+JP
+```
+
+Mount it in Docker:
+
+```yaml
+services:
+  speedtest:
+    image: ghcr.io/kyoppe/speedtest-datadog:latest
+    volumes:
+      - ./speedtest-country:/config/speedtest-country:ro
+```
+
+`server_selection:country` marks a test that used this filter. `speedtest_server_id` and `speedtest_server_name` still identify the server that answered. A blank or missing file leaves the previous server-ID and automatic selection behavior in place.
 
 ### Command Line Options
 
@@ -200,6 +221,8 @@ services:
       - DD_TAGS=env:production,location:home
       - SPEEDTEST_FREQUENCY=300
       - HOST_HOSTNAME=${HOST_HOSTNAME}  # Set in .env file
+    volumes:
+      - ./speedtest-country:/config/speedtest-country:ro
     restart: unless-stopped
 ```
 
@@ -280,6 +303,7 @@ SPEEDTEST_FREQUENCY=600
 ```
 speedtest-datadog/
 ├── speedtest_runner.py    # Main application
+├── speedtest_runner_test.py # Unit tests
 ├── requirements.txt        # Python dependencies
 ├── Dockerfile             # Container image definition
 ├── docker-compose.yaml    # Sample deployment config

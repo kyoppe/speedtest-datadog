@@ -21,10 +21,13 @@ services:
       - DD_SITE=datadoghq.com
       - METRIC_PREFIX=kyouhei
       - DD_TAGS=datacenter:machida
-      - SPEEDTEST_SERVER_ID=7139  # Comment in to use auto server selection(7139 is Tsukuba)
       - SPEEDTEST_FREQUENCY=120
       - ENABLE_LOGS=true
       - ENABLE_TRACES=true
+    volumes:
+      # One country code or country name per file. Read before every test.
+      # Empty file keeps SPEEDTEST_SERVER_ID, then automatic selection.
+      - ./speedtest-country:/config/speedtest-country:ro
     
     restart: unless-stopped
 

@@ -106,109 +106,290 @@ def get_host_info():
     return hostname, container_id, container_name
 
 
-def run_speedtest(logger=None, enable_tracing=False, server_id=None):
-    """Run speedtest-cli and return results as JSON"""
-    
-    # Start tracing span
-    span = None
-    if enable_tracing and DDTRACE_AVAILABLE and tracer:
-        span = tracer.trace("speedtest.run", service="speedtest")
-        if server_id:
-            span.set_tag("speedtest.server_id_requested", server_id)
-    
-    # Build command
+DEFAULT_COUNTRY_FILE = '/config/speedtest-country'
+
+
+class SpeedtestAttemptError(Exception):
+    """One speedtest attempt failed and another candidate may be tried."""
+
+
+def read_country_code(path):
+    """Return the country code or name from a file, or None when unset.
+
+    The file is read on every call so a bind-mounted file can change the
+    target without restarting the process. A missing or blank file means
+    no country filter.
+    """
+    if not path:
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            for line in handle:
+                text = line.strip()
+                if text and not text.startswith('#'):
+                    return text.split()[0]
+    except FileNotFoundError:
+        return None
+    except IsADirectoryError as exc:
+        raise Exception(
+            f"{path} is a directory. Mount a file that contains a country code."
+        ) from exc
+    return None
+
+
+def select_servers_by_country(servers_by_distance, country):
+    """Return servers whose country code or name matches, nearest first."""
+    wanted = country.strip().casefold()
+    if not wanted:
+        return []
+
+    matched = []
+    for servers in servers_by_distance.values():
+        for server in servers:
+            cc = str(server.get('cc', '')).casefold()
+            name = str(server.get('country', '')).casefold()
+            if wanted == cc or wanted == name:
+                matched.append(server)
+
+    matched.sort(key=lambda server: float(server.get('d', float('inf'))))
+    return matched
+
+
+def fetch_servers_by_distance():
+    """Load the speedtest.net server list keyed by distance."""
+    import speedtest as speedtest_mod
+
+    try:
+        client = speedtest_mod.Speedtest()
+        return client.get_servers()
+    except Exception as exc:
+        raise SpeedtestAttemptError(f'server list failed: {exc}') from exc
+
+
+def execute_speedtest(server_id=None, timeout=120):
+    """Run one speedtest-cli attempt and return the parsed JSON."""
     cmd = ['speedtest-cli', '--json']
-    server_selection = 'auto'
-    
-    if server_id:
+    if server_id is not None:
         cmd.extend(['--server', str(server_id)])
-        server_selection = 'manual'
-        print(f"🚀 Running speed test (server ID: {server_id})...")
-        if logger:
-            log_json(logger, "info", "Starting speedtest", status="running", 
-                    server_id=server_id, server_selection="manual")
-    else:
-        print("🚀 Running speed test (auto server selection)...")
-        if logger:
-            log_json(logger, "info", "Starting speedtest", status="running",
-                    server_selection="auto")
-    
+
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             check=True,
-            timeout=120
+            timeout=timeout,
         )
-        data = json.loads(result.stdout)
-        print("✅ Speed test completed")
-        
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise SpeedtestAttemptError(detail or 'speedtest failed') from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SpeedtestAttemptError('timeout') from exc
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SpeedtestAttemptError(f'invalid json: {exc}') from exc
+
+
+def _finish_speedtest_span(span, data, server_selection):
+    if not span:
+        return
+    span.set_tag("speedtest.download_mbps", round(data['download'] / 1_000_000, 2))
+    span.set_tag("speedtest.upload_mbps", round(data['upload'] / 1_000_000, 2))
+    span.set_tag("speedtest.ping_ms", round(data['ping'], 2))
+    span.set_tag("speedtest.server_selection", server_selection)
+    span.finish()
+
+
+def _log_speedtest_success(logger, data, server_selection):
+    print("✅ Speed test completed")
+    if logger:
+        log_json(logger, "info", "Speedtest completed",
+                event_type="speedtest_completed",
+                status="success",
+                download_mbps=round(data['download'] / 1_000_000, 2),
+                upload_mbps=round(data['upload'] / 1_000_000, 2),
+                ping_ms=round(data['ping'], 2),
+                server_selection=server_selection)
+
+
+def run_speedtest(logger=None, enable_tracing=False, server_id=None, country_code=None):
+    """Run speedtest-cli and return results as JSON plus the selection mode."""
+
+    span = None
+    if enable_tracing and DDTRACE_AVAILABLE and tracer:
+        span = tracer.trace("speedtest.run", service="speedtest")
+        if country_code:
+            span.set_tag("speedtest.country_requested", country_code)
+        elif server_id:
+            span.set_tag("speedtest.server_id_requested", server_id)
+
+    if country_code:
+        return _run_speedtest_for_country(logger, span, country_code)
+
+    return _run_speedtest_for_server_id(logger, span, server_id)
+
+
+def _run_speedtest_for_country(logger, span, country_code):
+    """Try servers in one country, nearest first. Never fall back to auto."""
+    try:
+        servers = fetch_servers_by_distance()
+    except SpeedtestAttemptError as exc:
+        error_msg = f"Speed test server list failed for country {country_code}: {exc}"
+        print(f"❌ {error_msg}")
         if logger:
-            log_json(logger, "info", "Speedtest completed", 
-                    status="success",
-                    download_mbps=round(data['download'] / 1_000_000, 2),
-                    upload_mbps=round(data['upload'] / 1_000_000, 2),
-                    ping_ms=round(data['ping'], 2),
-                    server_selection=server_selection)
-        
+            log_json(logger, "error", error_msg,
+                    event_type="speedtest_country_unavailable",
+                    status="failed", country=country_code, error=str(exc))
         if span:
-            span.set_tag("speedtest.download_mbps", round(data['download'] / 1_000_000, 2))
-            span.set_tag("speedtest.upload_mbps", round(data['upload'] / 1_000_000, 2))
-            span.set_tag("speedtest.ping_ms", round(data['ping'], 2))
-            span.set_tag("speedtest.server_selection", server_selection)
+            span.set_tag("error", True)
+            span.set_tag("error.message", error_msg)
             span.finish()
-        
-        return data, server_selection
-        
-    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-        # If manual server failed, try auto selection as fallback
-        if server_id:
-            error_msg = f"Speed test with server {server_id} failed, falling back to auto selection"
-            print(f"⚠️  {error_msg}")
+        raise Exception(error_msg) from exc
+
+    candidates = select_servers_by_country(servers, country_code)
+    if not candidates:
+        error_msg = f"No speedtest servers for country {country_code}"
+        print(f"❌ {error_msg}")
+        if logger:
+            log_json(logger, "error", error_msg,
+                    event_type="speedtest_country_unavailable",
+                    status="failed", country=country_code)
+        if span:
+            span.set_tag("error", True)
+            span.set_tag("error.message", error_msg)
+            span.finish()
+        raise Exception(error_msg)
+
+    print(f"🌏 Country filter: {country_code} ({len(candidates)} servers, nearest first)")
+    errors = []
+    for server in candidates:
+        server_id = str(server.get('id'))
+        distance_km = float(server.get('d', 0))
+        label = (
+            f"{server_id} {server.get('sponsor', '')} "
+            f"({server.get('name', '')}) {distance_km:.1f} km"
+        )
+        print(f"🚀 Running speed test (country {country_code}, server {label})...")
+        if logger:
+            log_json(logger, "info", "Starting speedtest",
+                    event_type="speedtest_started",
+                    status="running",
+                    country=country_code,
+                    server_id=server_id,
+                    server_name=server.get('name'),
+                    server_sponsor=server.get('sponsor'),
+                    distance_km=round(distance_km, 2),
+                    server_selection="country")
+        try:
+            data = execute_speedtest(server_id)
+        except FileNotFoundError:
+            error_msg = "speedtest-cli not installed"
+            print(f"❌ {error_msg}")
+            print("   Install: pip install speedtest-cli")
             if logger:
-                log_json(logger, "warning", error_msg, 
-                        status="fallback", 
-                        server_id=server_id,
-                        error=str(e))
+                log_json(logger, "error", error_msg,
+                        event_type="speedtest_cli_missing",
+                        status="failed")
             if span:
-                span.set_tag("speedtest.fallback", True)
-            
-            # Retry with auto selection
-            return run_speedtest(logger=logger, enable_tracing=False, server_id=None)
-        
-        # If auto selection also failed, raise error
-        error_msg = f"Speed test failed: {str(e)}"
-        print(f"❌ {error_msg}")
-        if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="process_error")
-        if span:
-            span.set_tag("error", True)
-            span.set_tag("error.message", error_msg)
-            span.finish()
-        raise Exception(error_msg)
-        
-    except subprocess.TimeoutExpired:
-        error_msg = "Speed test timeout"
-        print(f"❌ {error_msg}")
-        if logger:
-            log_json(logger, "error", error_msg, status="timeout", error_type="timeout")
-        if span:
-            span.set_tag("error", True)
-            span.set_tag("error.message", error_msg)
-            span.finish()
-        raise Exception(error_msg)
+                span.set_tag("error", True)
+                span.set_tag("error.message", error_msg)
+                span.finish()
+            raise Exception(error_msg)
+        except SpeedtestAttemptError as exc:
+            errors.append(f"{server_id}: {exc}")
+            print(f"⚠️  Server {server_id} failed, trying the next {country_code} server")
+            if logger:
+                log_json(logger, "warning", "Speedtest server failed",
+                        event_type="speedtest_server_failed",
+                        status="retry",
+                        country=country_code,
+                        server_id=server_id,
+                        error=str(exc))
+            continue
+
+        _log_speedtest_success(logger, data, 'country')
+        _finish_speedtest_span(span, data, 'country')
+        return data, 'country'
+
+    error_msg = (
+        f"All {country_code} speedtest servers failed: " + '; '.join(errors)
+    )
+    print(f"❌ {error_msg}")
+    if logger:
+        log_json(logger, "error", error_msg,
+                event_type="speedtest_country_exhausted",
+                status="failed",
+                country=country_code,
+                error=error_msg)
+    if span:
+        span.set_tag("error", True)
+        span.set_tag("error.message", error_msg)
+        span.finish()
+    raise Exception(error_msg)
+
+
+def _run_speedtest_for_server_id(logger, span, server_id):
+    """Run one server id, or auto selection. A failed id falls back to auto."""
+    server_selection = 'manual' if server_id else 'auto'
+    if server_id:
+        print(f"🚀 Running speed test (server ID: {server_id})...")
+    else:
+        print("🚀 Running speed test (auto server selection)...")
+    if logger:
+        log_json(logger, "info", "Starting speedtest",
+                event_type="speedtest_started",
+                status="running",
+                server_id=server_id,
+                server_selection=server_selection)
+
+    try:
+        data = execute_speedtest(server_id)
     except FileNotFoundError:
         error_msg = "speedtest-cli not installed"
         print(f"❌ {error_msg}")
         print("   Install: pip install speedtest-cli")
         if logger:
-            log_json(logger, "error", error_msg, status="failed", error_type="not_found")
+            log_json(logger, "error", error_msg,
+                    event_type="speedtest_cli_missing",
+                    status="failed")
         if span:
             span.set_tag("error", True)
             span.set_tag("error.message", error_msg)
             span.finish()
         raise Exception(error_msg)
+    except SpeedtestAttemptError as exc:
+        if server_id:
+            error_msg = f"Speed test with server {server_id} failed, falling back to auto selection"
+            print(f"⚠️  {error_msg}")
+            if logger:
+                log_json(logger, "warning", error_msg,
+                        event_type="speedtest_server_fallback",
+                        status="fallback",
+                        server_id=server_id,
+                        error=str(exc))
+            if span:
+                span.set_tag("speedtest.fallback", True)
+                span.finish()
+            return run_speedtest(logger=logger, enable_tracing=False, server_id=None)
+
+        error_msg = f"Speed test failed: {exc}"
+        print(f"❌ {error_msg}")
+        if logger:
+            log_json(logger, "error", error_msg,
+                    event_type="speedtest_failed",
+                    status="failed",
+                    error_type="process_error")
+        if span:
+            span.set_tag("error", True)
+            span.set_tag("error.message", error_msg)
+            span.finish()
+        raise Exception(error_msg) from exc
+
+    _log_speedtest_success(logger, data, server_selection)
+    _finish_speedtest_span(span, data, server_selection)
+    return data, server_selection
 
 
 def parse_speedtest_results(data, server_selection='auto'):
@@ -351,11 +532,19 @@ def dry_run_display(metrics, tags, prefix):
     print("\n" + "=" * 60)
 
 
-def run_speedtest_cycle(metric_prefix, dd_api_key, dd_site, user_tags, logger, enable_traces, dry_run, server_id):
+def run_speedtest_cycle(metric_prefix, dd_api_key, dd_site, user_tags, logger, enable_traces, dry_run, server_id, country_file):
     """Run a single speedtest cycle"""
     try:
-        # Run speedtest
-        speedtest_data, server_selection = run_speedtest(logger=logger, enable_tracing=enable_traces, server_id=server_id)
+        # Re-read each cycle so the mounted file can change without a restart.
+        country_code = read_country_code(country_file)
+        if country_code:
+            print(f"🌏 Country file: {country_file} -> {country_code}")
+        speedtest_data, server_selection = run_speedtest(
+            logger=logger,
+            enable_tracing=enable_traces,
+            server_id=server_id,
+            country_code=country_code,
+        )
         
         # Parse results
         metrics, server_tags = parse_speedtest_results(speedtest_data, server_selection)
@@ -423,6 +612,7 @@ def main():
     enable_traces = os.getenv('ENABLE_TRACES', 'false').lower() == 'true'
     frequency = int(os.getenv('SPEEDTEST_FREQUENCY', '300'))  # Default: 5 minutes
     server_id_str = os.getenv('SPEEDTEST_SERVER_ID', '')  # Default: auto selection
+    country_file = os.getenv('SPEEDTEST_COUNTRY_FILE', DEFAULT_COUNTRY_FILE)
     
     # Parse server ID
     server_id = None
@@ -470,7 +660,8 @@ def main():
     print(f"   Metric Prefix: {metric_prefix}")
     print(f"   DD Site: {dd_site}")
     print(f"   User Tags: {user_tags if user_tags else '(none)'}")
-    print(f"   Server ID: {server_id if server_id else 'auto'}")
+    print(f"   Server ID: {server_id if server_id else 'auto (used when the country file is empty)'}")
+    print(f"   Country file: {country_file} (read before each test)")
     print(f"   Logs: {'Enabled (JSON output)' if enable_logs else 'Disabled'}")
     print(f"   Traces: {tracing_status}")
     print(f"   Frequency: {frequency}s ({frequency // 60} minutes)")
@@ -540,7 +731,8 @@ def main():
                 logger=logger,
                 enable_traces=enable_traces,
                 dry_run=args.dry_run,
-                server_id=server_id
+                server_id=server_id,
+                country_file=country_file,
             )
             test_duration = (datetime.now() - test_start).total_seconds()
             is_running = False
