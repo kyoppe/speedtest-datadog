@@ -109,6 +109,7 @@ docker-compose up -d
 | `HOST_HOSTNAME` | No | auto | **Important for Docker**: Set to actual hostname to differentiate metrics between multiple servers. Run `hostname` to get value. |
 | `ENABLE_LOGS` | No | `false` | Enable JSON structured logs to stdout |
 | `ENABLE_TRACES` | No | `false` | Enable APM traces (requires Datadog Agent) |
+| `DD_AGENT_HOST` | No | - | Datadog Agent hostname for APM traces (for example, `datadog-agent` in Docker Compose) |
 | `DD_ENV` | No | - | Environment tag for traces |
 
 ### Country file
@@ -171,7 +172,10 @@ The `docker-compose.yaml` file is already configured to use this image.
 echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
 # 2. Build multi-architecture image
+VERSION="$(git rev-parse --short HEAD)"
 docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg DD_VERSION="$VERSION" \
+  -t ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:"$VERSION" \
   -t ghcr.io/YOUR_GITHUB_USERNAME/speedtest-datadog:latest \
   --push .
 
@@ -179,6 +183,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 # Go to: https://github.com/YOUR_GITHUB_USERNAME?tab=packages
 # Click on 'speedtest-datadog' → Package settings → Change visibility → Public
 ```
+
+`DD_VERSION` is embedded in the image and exposed to the container. Use the
+short Git commit hash for both `DD_VERSION` and the version tag when publishing
+a release.
 
 **Note**: Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username.
 
@@ -221,6 +229,9 @@ services:
       - DD_TAGS=env:production,location:home
       - SPEEDTEST_FREQUENCY=300
       - HOST_HOSTNAME=${HOST_HOSTNAME}  # Set in .env file
+      - ENABLE_LOGS=true
+      - ENABLE_TRACES=true
+      - DD_AGENT_HOST=datadog-agent
     volumes:
       - ./speedtest-country:/config/speedtest-country:ro
     restart: unless-stopped

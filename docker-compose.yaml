@@ -24,6 +24,7 @@ services:
       - SPEEDTEST_FREQUENCY=120
       - ENABLE_LOGS=true
       - ENABLE_TRACES=true
+      - DD_AGENT_HOST=datadog-agent
     volumes:
       # One country code or country name per file. Read before every test.
       # Empty file keeps SPEEDTEST_SERVER_ID, then automatic selection.
